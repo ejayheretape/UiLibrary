@@ -1,10 +1,14 @@
+-- Obsidian UI (mobile-patched + executor-safe)
+-- Version: mobile-friendly patch (2025)
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 local CoreGui = game:GetService("CoreGui")
+local RunService = game:GetService("RunService")
 
 local Obsidian = {}
 Obsidian.__index = Obsidian
 
+-- Config (same as original, can be overridden via :Init)
 local Config = {
 	Theme = "Dark",
 	Outline = true,
@@ -34,16 +38,41 @@ local Themes = {
 	}
 }
 
+-- Executor-safe parent selection
+local function chooseGuiParent()
+	-- prefer gethui (Kavo-style), then get_hidden_gui, then syn.protect_gui(CoreGui), then CoreGui
+	local ok, p = pcall(function() return gethui and gethui() end)
+	if ok and p then return p end
+	ok, p = pcall(function() return get_hidden_gui and get_hidden_gui() end)
+	if ok and p then return p end
+	-- syn.protect_gui exists in some executors (protects ScreenGui when parented to CoreGui)
+	if syn and syn.protect_gui and CoreGui then
+		local sg = Instance.new("ScreenGui")
+		sg.Name = "Obsidian_ProcTemp"
+		-- attempt protect; if it errors, fallback later
+		local ok2, _ = pcall(function() syn.protect_gui(sg) end)
+		if ok2 then
+			sg:Destroy()
+			return CoreGui
+		end
+	end
+	-- fallback to CoreGui (may be blocked in some envs)
+	return CoreGui
+end
+
+-- Notification container (keeps existing Notify behavior)
 local NotifContainer
 
 local function Notify(text, duration)
 	duration = duration or 3
-	if not NotifContainer then
+	local parent = chooseGuiParent()
+	if not NotifContainer or not NotifContainer.Parent then
 		NotifContainer = Instance.new("Frame")
 		NotifContainer.Size = UDim2.new(0, 260, 0, 0)
-		NotifContainer.Position = UDim2.new(0.5, -130, 1, -70)
+		NotifContainer.AnchorPoint = Vector2.new(0.5, 1)
+		NotifContainer.Position = UDim2.new(0.5, 0, 1, -70)
 		NotifContainer.BackgroundTransparency = 1
-		NotifContainer.Parent = CoreGui
+		NotifContainer.Parent = parent
 		local layout = Instance.new("UIListLayout")
 		layout.SortOrder = Enum.SortOrder.LayoutOrder
 		layout.VerticalAlignment = Enum.VerticalAlignment.Bottom
@@ -74,6 +103,7 @@ local function Notify(text, duration)
 	label.TextSize = 13
 	label.Font = Enum.Font.Gotham
 	label.TextXAlignment = Enum.TextXAlignment.Left
+	label.TextWrapped = true
 	label.Parent = notif
 	local bar = Instance.new("Frame")
 	bar.Size = UDim2.new(1, 0, 0, 2)
@@ -94,15 +124,18 @@ local function Notify(text, duration)
 	end)
 end
 
+-- Key system window (unchanged but parent-safe)
 local function ShowKeySystem(callback)
 	if not Config.KeySystem then callback() return end
+	local parent = chooseGuiParent()
 	local gui = Instance.new("ScreenGui")
 	gui.Name = "ObsidianKey"
 	gui.ResetOnSpawn = false
-	gui.Parent = CoreGui
+	gui.Parent = parent
 	local bg = Instance.new("Frame")
 	bg.Size = UDim2.new(0, 300, 0, 180)
 	bg.Position = UDim2.new(0.5, -150, 0.5, -90)
+	bg.AnchorPoint = Vector2.new(0.5, 0.5)
 	bg.BackgroundColor3 = Themes[Config.Theme].bg
 	bg.BorderSizePixel = 0
 	bg.Parent = gui
@@ -157,7 +190,11 @@ local function ShowKeySystem(callback)
 		link.Parent = bg
 		link.MouseButton1Click:Connect(function()
 			Notify("Opening link...", 2)
-			if syn and syn.request then syn.request({Url = Config.KeyLink}) else Notify("No HTTP", 3) end
+			if syn and syn.request then
+				pcall(function() syn.request({Url = Config.KeyLink}) end)
+			else
+				Notify("No HTTP", 3)
+			end
 		end)
 	end
 	btn.MouseButton1Click:Connect(function()
@@ -172,46 +209,56 @@ local function ShowKeySystem(callback)
 	end)
 end
 
+-- Add Discord button helper (keeps hover tooltip but uses touch-friendly approach)
 local function AddDiscordButton(titleBar)
 	if not Config.Discord then return end
 	local btn = Instance.new("ImageButton")
-	btn.Size = UDim2.new(0, 36, 0, 36)
-	btn.Position = UDim2.new(1, -44, 0, 5)
+	btn.Size = UDim2.new(0, 40, 0, 40)
+	btn.Position = UDim2.new(1, -48, 0, 3)
 	btn.BackgroundTransparency = 1
 	btn.Image = "rbxassetid://6034838948"
 	btn.Parent = titleBar
+	btn.AutoButtonColor = true
+	btn.ZIndex = 5
+
+	local tip = Instance.new("TextLabel")
+	tip.Size = UDim2.new(0, 80, 0, 28)
+	tip.Position = UDim2.new(1, -88, 0, 40)
+	tip.BackgroundColor3 = Themes[Config.Theme].elem
+	tip.Text = "Discord"
+	tip.TextColor3 = Themes[Config.Theme].text
+	tip.Font = Enum.Font.Gotham
+	tip.TextSize = 12
+	tip.Visible = false
+	tip.ZIndex = 100
+	tip.Parent = titleBar
+	local tc = Instance.new("UICorner")
+	tc.CornerRadius = UDim.new(0, 6)
+	tc.Parent = tip
+
+	-- show on hover for desktop, on tap for mobile
+	btn.MouseEnter:Connect(function() tip.Visible = true end)
+	btn.MouseLeave:Connect(function() tip.Visible = false end)
 	btn.MouseButton1Click:Connect(function()
+		-- try to open via HTTP (executor)
 		if syn and syn.request then
-			syn.request({Url = Config.DiscordInvite})
+			pcall(function() syn.request({Url = Config.DiscordInvite}) end)
 			Notify("Opening Discord...", 2)
 		else
 			Notify("No HTTP", 3)
 		end
 	end)
-	local tip = Instance.new("TextLabel")
-	tip.Size = UDim2.new(0, 80, 0, 20)
-	tip.Position = UDim2.new(0, -22, 0, 40)
-	tip.BackgroundColor3 = Themes[Config.Theme].elem
-	tip.Text = "Discord"
-	tip.TextColor3 = Themes[Config.Theme].text
-	tip.Font = Enum.Font.Gotham
-	tip.TextSize = 11
-	tip.Visible = false
-	tip.ZIndex = 100
-	tip.Parent = btn
-	local tc = Instance.new("UICorner")
-	tc.CornerRadius = UDim.new(0, 6)
-	tc.Parent = tip
-	btn.MouseEnter:Connect(function() tip.Visible = true end)
-	btn.MouseLeave:Connect(function() tip.Visible = false end)
 end
 
+-- Apply theme utility (applies to created window table)
 local function ApplyTheme(win)
 	local t = Themes[Config.Theme]
-	win.Main.BackgroundColor3 = t.bg
-	win.TitleBar.BackgroundColor3 = t.bg:Lerp(Color3.new(0,0,0), 0.2)
-	win.TabContainer.BackgroundColor3 = t.tab
+	if win.Main then win.Main.BackgroundColor3 = t.bg end
+	if win.TitleBar then win.TitleBar.BackgroundColor3 = t.bg:Lerp(Color3.new(0,0,0), 0.2) end
+	if win.TabContainer then win.TabContainer.BackgroundColor3 = t.tab end
+
 	for _, o in ipairs({win.Main, win.TitleBar, win.TabContainer}) do
+		if not o then continue end
 		if o:FindFirstChild("UIStroke") then
 			o.UIStroke.Color = Config.OutlineColor
 			o.UIStroke.Thickness = Config.OutlineThickness
@@ -224,14 +271,15 @@ local function ApplyTheme(win)
 			end
 		end
 	end
-	for _, tab in ipairs(win.Tabs) do
+
+	for _, tab in ipairs(win.Tabs or {}) do
 		if tab.Button then
 			tab.Button.BackgroundColor3 = t.tab
 			tab.Button.TextColor3 = t.text
 		end
-		for _, e in ipairs(tab.Elements) do
+		for _, e in ipairs(tab.Elements or {}) do
 			pcall(function()
-				if e:IsA("Frame") and e.Name ~= "Main" then
+				if typeof(e) == "Instance" and e:IsA("Frame") and e.Name ~= "Main" then
 					e.BackgroundColor3 = t.elem
 					if not e:FindFirstChild("UICorner") then
 						local c = Instance.new("UICorner")
@@ -249,9 +297,9 @@ local function ApplyTheme(win)
 							s.Parent = e
 						end
 					end
-				elseif e:IsA("TextLabel") then
+				elseif typeof(e) == "Instance" and e:IsA("TextLabel") then
 					e.TextColor3 = t.text
-				elseif e:IsA("TextButton") then
+				elseif typeof(e) == "Instance" and e:IsA("TextButton") then
 					e.BackgroundColor3 = t.accent
 					e.TextColor3 = Color3.new(1,1,1)
 					if not e:FindFirstChild("UICorner") then
@@ -265,6 +313,19 @@ local function ApplyTheme(win)
 	end
 end
 
+-- Utility to add UIPadding to frames (for mobile-friendly spacing)
+local function addSafePadding(frame, padAmount)
+	padAmount = padAmount or 8
+	if frame:FindFirstChildOfClass("UIPadding") then return end
+	local p = Instance.new("UIPadding")
+	p.PaddingLeft = UDim.new(0, padAmount)
+	p.PaddingRight = UDim.new(0, padAmount)
+	p.PaddingTop = UDim.new(0, padAmount)
+	p.PaddingBottom = UDim.new(0, padAmount)
+	p.Parent = frame
+end
+
+-- Main CreateWindow
 function Obsidian:Init(options)
 	if options then
 		for k, v in pairs(options) do
@@ -274,19 +335,36 @@ function Obsidian:Init(options)
 	return self
 end
 
+-- Mobile override toggle (manual testing)
+Obsidian._forceMobile = nil
+function Obsidian.SetMobileMode(val)
+	Obsidian._forceMobile = val
+end
+
 function Obsidian:CreateWindow(title)
 	return ShowKeySystem(function()
-		local isMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
-		local width = isMobile and 320 or 580
-		local height = isMobile and 500 or 520
+		-- detect mobile (touch) or use forced override
+		local isMobile = (Obsidian._forceMobile == nil and UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled) or (Obsidian._forceMobile == true)
+		-- base sizes
+		local width = isMobile and 340 or 580
+		local height = isMobile and 520 or 520
+
+		local parent = chooseGuiParent()
 		local screen = Instance.new("ScreenGui")
 		screen.Name = "ObsidianUI"
 		screen.ResetOnSpawn = false
-		screen.Parent = CoreGui
+		screen.Parent = parent
+
+		-- UIScale for global scaling
+		local uiScale = Instance.new("UIScale")
+		uiScale.Scale = isMobile and 1.18 or 1
+		uiScale.Parent = screen
+
 		local main = Instance.new("Frame")
 		main.Name = "Main"
 		main.Size = UDim2.new(0, width, 0, height)
-		main.Position = UDim2.new(0.5, -width/2, 0.5, -height/2)
+		main.AnchorPoint = Vector2.new(0.5, 0.5)
+		main.Position = UDim2.new(0.5, 0.5, 0.45, 0) -- slightly higher safe area
 		main.BackgroundColor3 = Themes[Config.Theme].bg
 		main.BorderSizePixel = 0
 		main.ClipsDescendants = true
@@ -300,19 +378,22 @@ function Obsidian:CreateWindow(title)
 			stroke.Thickness = Config.OutlineThickness
 			stroke.Parent = main
 		end
+
+		-- subtle shadow (kept simple for performance)
 		local shadow = Instance.new("Frame")
 		shadow.Size = UDim2.new(1, 20, 1, 20)
 		shadow.Position = UDim2.new(0, -10, 0, -10)
 		shadow.BackgroundColor3 = Color3.new(0,0,0)
-		shadow.BackgroundTransparency = 0.75
+		shadow.BackgroundTransparency = 0.78
 		shadow.ZIndex = 0
 		shadow.Parent = main
 		local sc = Instance.new("UICorner")
 		sc.CornerRadius = UDim.new(0, 14)
 		sc.Parent = shadow
+
 		local titleBar = Instance.new("Frame")
 		titleBar.Name = "TitleBar"
-		titleBar.Size = UDim2.new(1, 0, 0, 46)
+		titleBar.Size = UDim2.new(1, 0, 0, 52)
 		titleBar.BackgroundColor3 = Themes[Config.Theme].bg:Lerp(Color3.new(0,0,0), 0.2)
 		titleBar.BorderSizePixel = 0
 		titleBar.Parent = main
@@ -325,29 +406,33 @@ function Obsidian:CreateWindow(title)
 			stroke.Thickness = Config.OutlineThickness
 			stroke.Parent = titleBar
 		end
+
 		local titleLabel = Instance.new("TextLabel")
-		titleLabel.Size = UDim2.new(1, -70, 1, 0)
-		titleLabel.Position = UDim2.new(0, 14, 0, 0)
+		titleLabel.Size = UDim2.new(1, -80, 1, 0)
+		titleLabel.Position = UDim2.new(0, 16, 0, 0)
 		titleLabel.BackgroundTransparency = 1
 		titleLabel.Text = title or "Obsidian UI"
 		titleLabel.TextColor3 = Themes[Config.Theme].text
-		titleLabel.TextSize = isMobile and 16 or 17
+		titleLabel.TextSize = isMobile and 17 or 17
 		titleLabel.Font = Enum.Font.GothamBold
 		titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+		titleLabel.TextScaled = false
 		titleLabel.Parent = titleBar
+
 		local closeBtn = Instance.new("TextButton")
-		closeBtn.Size = UDim2.new(0, 36, 0, 36)
-		closeBtn.Position = UDim2.new(1, -40, 0, 5)
+		closeBtn.Size = UDim2.new(0, 40, 0, 40)
+		closeBtn.Position = UDim2.new(1, -50, 0, 6)
 		closeBtn.BackgroundTransparency = 1
-		closeBtn.Text = "X"
+		closeBtn.Text = "✕"
 		closeBtn.TextColor3 = Color3.fromRGB(255, 80, 80)
 		closeBtn.TextSize = 20
 		closeBtn.Font = Enum.Font.GothamBold
 		closeBtn.Parent = titleBar
+
 		local tabContainer = Instance.new("Frame")
 		tabContainer.Name = "TabContainer"
-		tabContainer.Size = UDim2.new(0, 100, 1, -46)
-		tabContainer.Position = UDim2.new(0, 0, 0, 46)
+		tabContainer.Size = UDim2.new(0, isMobile and 120 or 100, 1, -52)
+		tabContainer.Position = UDim2.new(0, 0, 0, 52)
 		tabContainer.BackgroundColor3 = Themes[Config.Theme].tab
 		tabContainer.BorderSizePixel = 0
 		tabContainer.Parent = main
@@ -357,67 +442,86 @@ function Obsidian:CreateWindow(title)
 			stroke.Thickness = Config.OutlineThickness
 			stroke.Parent = tabContainer
 		end
+
 		local content = Instance.new("Frame")
-		content.Size = UDim2.new(1, -100, 1, -46)
-		content.Position = UDim2.new(0, 100, 0, 46)
+		content.Size = UDim2.new(1, -tabContainer.Size.X.Offset, 1, -52)
+		content.Position = UDim2.new(0, tabContainer.Size.X.Offset, 0, 52)
 		content.BackgroundTransparency = 1
 		content.Parent = main
+
 		local tabList = Instance.new("ScrollingFrame")
 		tabList.Size = UDim2.new(1, 0, 1, 0)
 		tabList.BackgroundTransparency = 1
 		tabList.BorderSizePixel = 0
-		tabList.ScrollBarThickness = 0
+		tabList.ScrollBarThickness = isMobile and 8 or 3
 		tabList.CanvasSize = UDim2.new(0, 0, 0, 0)
 		tabList.Parent = tabContainer
+		tabList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+
 		local listLayout = Instance.new("UIListLayout")
-		listLayout.Padding = UDim.new(0, 5)
+		listLayout.Padding = UDim.new(0, 8)
 		listLayout.Parent = tabList
+		addSafePadding(tabList, 8)
+
 		local tabs = {}
 		local currentTab = nil
 		local function selectTab(tab)
 			if currentTab then
-				TweenService:Create(currentTab.Button, TweenInfo.new(0.2), {BackgroundColor3 = Themes[Config.Theme].tab}):Play()
-				currentTab.Frame.Visible = false
+				pcall(function()
+					TweenService:Create(currentTab.Button, TweenInfo.new(0.2), {BackgroundColor3 = Themes[Config.Theme].tab}):Play()
+					currentTab.Frame.Visible = false
+				end)
 			end
-			TweenService:Create(tab.Button, TweenInfo.new(0.2), {BackgroundColor3 = Themes[Config.Theme].accent}):Play()
-			tab.Frame.Visible = true
+			pcall(function()
+				TweenService:Create(tab.Button, TweenInfo.new(0.2), {BackgroundColor3 = Themes[Config.Theme].accent}):Play()
+				tab.Frame.Visible = true
+			end)
 			currentTab = tab
 		end
 		local window = {Main = main, TitleBar = titleBar, TabContainer = tabContainer, Tabs = tabs}
+
+		-- Tab creation API
 		function window:CreateTab(name)
 			local tab = {}
 			local button = Instance.new("TextButton")
-			button.Size = UDim2.new(1, -12, 0, 36)
-			button.Position = UDim2.new(0, 6, 0, 0)
+			button.Size = UDim2.new(1, -16, 0, isMobile and 44 or 36)
+			button.Position = UDim2.new(0, 8, 0, 0)
 			button.BackgroundColor3 = Themes[Config.Theme].tab
 			button.BorderSizePixel = 0
 			button.Text = "  " .. name
 			button.TextColor3 = Themes[Config.Theme].text
-			button.TextSize = isMobile and 12 or 13
+			button.TextSize = isMobile and 14 or 13
 			button.Font = Enum.Font.GothamSemibold
 			button.TextXAlignment = Enum.TextXAlignment.Left
 			button.Parent = tabList
 			local btnCorner = Instance.new("UICorner")
 			btnCorner.CornerRadius = UDim.new(0, 8)
 			btnCorner.Parent = button
+
 			local frame = Instance.new("ScrollingFrame")
-			frame.Size = UDim2.new(1, -12, 1, -12)
-			frame.Position = UDim2.new(0, 6, 0, 6)
+			frame.Size = UDim2.new(1, -24, 1, -20)
+			frame.Position = UDim2.new(0, 12, 0, 6)
 			frame.BackgroundTransparency = 1
 			frame.BorderSizePixel = 0
-			frame.ScrollBarThickness = 3
+			frame.ScrollBarThickness = isMobile and 8 or 6
 			frame.Visible = false
 			frame.Parent = content
+			addSafePadding(frame, 10)
+			frame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+
 			local layout = Instance.new("UIListLayout")
-			layout.Padding = UDim.new(0, 8)
+			layout.Padding = UDim.new(0, 10)
 			layout.Parent = frame
+
 			tab.Button = button
 			tab.Frame = frame
 			tab.Elements = {}
 			button.MouseButton1Click:Connect(function() selectTab(tab) end)
+
+			-- CreateSection
 			function tab:CreateSection(title)
 				local sec = Instance.new("Frame")
-				sec.Size = UDim2.new(1, 0, 0, 26)
+				sec.Size = UDim2.new(1, 0, 0, 28)
 				sec.BackgroundTransparency = 1
 				sec.Parent = frame
 				local label = Instance.new("TextLabel")
@@ -425,20 +529,23 @@ function Obsidian:CreateWindow(title)
 				label.BackgroundTransparency = 1
 				label.Text = title
 				label.TextColor3 = Themes[Config.Theme].accent
-				label.TextSize = isMobile and 13 or 14
+				label.TextSize = isMobile and 15 or 14
 				label.Font = Enum.Font.GothamBold
 				label.TextXAlignment = Enum.TextXAlignment.Left
 				label.Parent = sec
 				local line = Instance.new("Frame")
 				line.Size = UDim2.new(1, 0, 0, 1)
+				line.Position = UDim2.new(0, 0, 1, -1)
 				line.BackgroundColor3 = Themes[Config.Theme].accent
 				line.BorderSizePixel = 0
 				line.Parent = sec
 				return sec
 			end
+
+			-- CreateToggle (touch-friendly)
 			function tab:CreateToggle(data)
 				local toggle = Instance.new("Frame")
-				toggle.Size = UDim2.new(1, 0, 0, 44)
+				toggle.Size = UDim2.new(1, 0, 0, isMobile and 54 or 44)
 				toggle.BackgroundColor3 = Themes[Config.Theme].elem
 				toggle.BorderSizePixel = 0
 				toggle.Parent = frame
@@ -452,52 +559,61 @@ function Obsidian:CreateWindow(title)
 					stroke.Parent = toggle
 				end
 				local label = Instance.new("TextLabel")
-				label.Size = UDim2.new(1, -60, 1, 0)
+				label.Size = UDim2.new(1, -80, 1, 0)
 				label.BackgroundTransparency = 1
 				label.Text = data.Name
 				label.TextColor3 = Themes[Config.Theme].text
-				label.TextSize = isMobile and 12 or 13
+				label.TextSize = isMobile and 14 or 13
 				label.Font = Enum.Font.Gotham
 				label.TextXAlignment = Enum.TextXAlignment.Left
 				label.Position = UDim2.new(0, 12, 0, 0)
 				label.Parent = toggle
 				local switch = Instance.new("Frame")
-				switch.Size = UDim2.new(0, 50, 0, 28)
-				switch.Position = UDim2.new(1, -58, 0.5, -14)
+				switch.Size = UDim2.new(0, isMobile and 60 or 50, 0, isMobile and 34 or 28)
+				switch.Position = UDim2.new(1, -(isMobile and 76 or 58), 0.5, -(isMobile and 17 or 14))
 				switch.BackgroundColor3 = data.Value and Themes[Config.Theme].accent or Themes[Config.Theme].elem:Lerp(Color3.new(0,0,0), 0.3)
 				switch.BorderSizePixel = 0
 				switch.Parent = toggle
 				local sc = Instance.new("UICorner")
-				sc.CornerRadius = UDim.new(0, 14)
+				sc.CornerRadius = UDim.new(1, 0)
 				sc.Parent = switch
 				local knob = Instance.new("Frame")
-				knob.Size = UDim2.new(0, 22, 0, 22)
-				knob.Position = data.Value and UDim2.new(1, -24, 0.5, -11) or UDim2.new(0, 3, 0.5, -11)
+				knob.Size = UDim2.new(0, isMobile and 28 or 22, 0, isMobile and 28 or 22)
+				knob.Position = data.Value and UDim2.new(1, -(isMobile and 34 or 24), 0.5, -(isMobile and 14 or 11)) or UDim2.new(0, 4, 0.5, -(isMobile and 14 or 11))
 				knob.BackgroundColor3 = Color3.new(1,1,1)
 				knob.BorderSizePixel = 0
 				knob.Parent = switch
 				local kc = Instance.new("UICorner")
-				kc.CornerRadius = UDim.new(0, 11)
+				kc.CornerRadius = UDim.new(1, 0)
 				kc.Parent = knob
+
+				local function toggleFlip()
+					data.Value = not data.Value
+					TweenService:Create(switch, TweenInfo.new(0.18), {BackgroundColor3 = data.Value and Themes[Config.Theme].accent or Themes[Config.Theme].elem:Lerp(Color3.new(0,0,0), 0.3)}):Play()
+					TweenService:Create(knob, TweenInfo.new(0.18), {Position = data.Value and UDim2.new(1, -(isMobile and 34 or 24), 0.5, -(isMobile and 14 or 11)) or UDim2.new(0, 4, 0.5, -(isMobile and 14 or 11))}):Play()
+					if data.Callback then pcall(function() data.Callback(data.Value) end) end
+				end
+
+				-- touch-friendly bindings: toggle on any tap within toggle
 				toggle.InputBegan:Connect(function(input)
 					if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-						data.Value = not data.Value
-						TweenService:Create(switch, TweenInfo.new(0.25), {BackgroundColor3 = data.Value and Themes[Config.Theme].accent or Themes[Config.Theme].elem:Lerp(Color3.new(0,0,0), 0.3)}):Play()
-						TweenService:Create(knob, TweenInfo.new(0.25), {Position = data.Value and UDim2.new(1, -24, 0.5, -11) or UDim2.new(0, 3, 0.5, -11)}):Play()
-						if data.Callback then data.Callback(data.Value) end
+						toggleFlip()
 					end
 				end)
+
 				table.insert(tab.Elements, toggle)
 				return toggle
 			end
+
+			-- CreateButton
 			function tab:CreateButton(data)
 				local btn = Instance.new("TextButton")
-				btn.Size = UDim2.new(1, 0, 0, 40)
+				btn.Size = UDim2.new(1, 0, 0, isMobile and 48 or 40)
 				btn.BackgroundColor3 = Themes[Config.Theme].accent
 				btn.BorderSizePixel = 0
 				btn.Text = data.Name
 				btn.TextColor3 = Color3.new(1,1,1)
-				btn.TextSize = isMobile and 12 or 13
+				btn.TextSize = isMobile and 15 or 13
 				btn.Font = Enum.Font.GothamBold
 				btn.Parent = frame
 				local bc = Instance.new("UICorner")
@@ -510,14 +626,16 @@ function Obsidian:CreateWindow(title)
 					stroke.Parent = btn
 				end
 				btn.MouseButton1Click:Connect(function()
-					if data.Callback then data.Callback() end
+					if data.Callback then pcall(function() data.Callback() end) end
 				end)
 				table.insert(tab.Elements, btn)
 				return btn
 			end
+
+			-- CreateInput
 			function tab:CreateInput(data)
 				local input = Instance.new("Frame")
-				input.Size = UDim2.new(1, 0, 0, 54)
+				input.Size = UDim2.new(1, 0, 0, isMobile and 66 or 54)
 				input.BackgroundColor3 = Themes[Config.Theme].elem
 				input.BorderSizePixel = 0
 				input.Parent = frame
@@ -535,34 +653,38 @@ function Obsidian:CreateWindow(title)
 				label.BackgroundTransparency = 1
 				label.Text = data.Name
 				label.TextColor3 = Themes[Config.Theme].text
-				label.TextSize = isMobile and 12 or 13
+				label.TextSize = isMobile and 14 or 13
 				label.Font = Enum.Font.Gotham
 				label.TextXAlignment = Enum.TextXAlignment.Left
-				label.Position = UDim2.new(0, 12, 0, 4)
+				label.Position = UDim2.new(0, 12, 0, 6)
 				label.Parent = input
 				local box = Instance.new("TextBox")
-				box.Size = UDim2.new(1, -24, 0, 28)
-				box.Position = UDim2.new(0, 12, 1, -34)
+				box.Size = UDim2.new(1, -24, 0, isMobile and 34 or 28)
+				box.Position = UDim2.new(0, 12, 0, isMobile and 30 or 26)
 				box.BackgroundColor3 = Themes[Config.Theme].elem:Lerp(Color3.new(0,0,0), 0.2)
 				box.BorderSizePixel = 0
 				box.PlaceholderText = data.Placeholder or ""
 				box.Text = ""
 				box.TextColor3 = Themes[Config.Theme].text
-				box.TextSize = isMobile and 12 or 13
+				box.TextSize = isMobile and 14 or 13
 				box.Font = Enum.Font.Gotham
+				box.TextScaled = false
+				box.ClearTextOnFocus = false
 				box.Parent = input
 				local bc = Instance.new("UICorner")
 				bc.CornerRadius = UDim.new(0, 6)
 				bc.Parent = box
 				box.FocusLost:Connect(function(enter)
-					if enter and data.Callback then data.Callback(box.Text) end
+					if enter and data.Callback then pcall(function() data.Callback(box.Text) end) end
 				end)
 				table.insert(tab.Elements, input)
 				return input
 			end
+
+			-- CreateDropdown
 			function tab:CreateDropdown(data)
 				local drop = Instance.new("Frame")
-				drop.Size = UDim2.new(1, 0, 0, 54)
+				drop.Size = UDim2.new(1, 0, 0, isMobile and 70 or 54)
 				drop.BackgroundColor3 = Themes[Config.Theme].elem
 				drop.BorderSizePixel = 0
 				drop.Parent = frame
@@ -580,64 +702,78 @@ function Obsidian:CreateWindow(title)
 				label.BackgroundTransparency = 1
 				label.Text = data.Name
 				label.TextColor3 = Themes[Config.Theme].text
-				label.TextSize = isMobile and 12 or 13
+				label.TextSize = isMobile and 14 or 13
 				label.Font = Enum.Font.Gotham
 				label.TextXAlignment = Enum.TextXAlignment.Left
-				label.Position = UDim2.new(0, 12, 0, 4)
+				label.Position = UDim2.new(0, 12, 0, 6)
 				label.Parent = drop
 				local selector = Instance.new("TextButton")
-				selector.Size = UDim2.new(1, -24, 0, 28)
-				selector.Position = UDim2.new(0, 12, 1, -34)
+				selector.Size = UDim2.new(1, -24, 0, isMobile and 36 or 28)
+				selector.Position = UDim2.new(0, 12, 0, isMobile and 30 or 26)
 				selector.BackgroundColor3 = Themes[Config.Theme].elem:Lerp(Color3.new(0,0,0), 0.2)
 				selector.BorderSizePixel = 0
 				selector.Text = "  " .. (data.Value or data.Options[1])
 				selector.TextColor3 = Themes[Config.Theme].text
-				selector.TextSize = isMobile and 12 or 13
+				selector.TextSize = isMobile and 14 or 13
 				selector.Font = Enum.Font.Gotham
 				selector.TextXAlignment = Enum.TextXAlignment.Left
 				selector.Parent = drop
 				local sc = Instance.new("UICorner")
 				sc.CornerRadius = UDim.new(0, 6)
 				sc.Parent = selector
-				local menu = Instance.new("Frame")
-				menu.Size = UDim2.new(1, 0, 0, #data.Options * 32)
-				menu.Position = UDim2.new(0, 0, 1, 2)
+
+				-- Dynamic menu as a popup frame under selector
+				local menu = Instance.new("ScrollingFrame")
+				menu.Size = UDim2.new(0, selector.AbsoluteSize.X, 0, math.clamp(#data.Options * (isMobile and 40 or 32), 0, (isMobile and 200 or 160)))
+				menu.Position = UDim2.new(0, selector.AbsolutePosition.X - drop.AbsolutePosition.X, 0, selector.AbsolutePosition.Y - drop.AbsolutePosition.Y + selector.AbsoluteSize.Y + 6)
 				menu.BackgroundColor3 = Themes[Config.Theme].elem:Lerp(Color3.new(0,0,0), 0.1)
 				menu.BorderSizePixel = 0
 				menu.Visible = false
-				menu.ZIndex = 10
-				menu.Parent = selector
+				menu.ZIndex = 30
+				menu.Parent = drop
+				menu.CanvasSize = UDim2.new(0, 0, 0, #data.Options * (isMobile and 40 or 32))
+				menu.ScrollBarThickness = isMobile and 8 or 6
+
 				local mc = Instance.new("UICorner")
 				mc.CornerRadius = UDim.new(0, 6)
 				mc.Parent = menu
+
+				-- build options
 				for i, opt in ipairs(data.Options) do
 					local optBtn = Instance.new("TextButton")
-					optBtn.Size = UDim2.new(1, 0, 0, 32)
-					optBtn.BackgroundColor3 = Themes[Config.Theme].elem:Lerp(Color3.new(0,0,0), 0.1)
+					optBtn.Size = UDim2.new(1, 0, 0, isMobile and 40 or 32)
+					optBtn.BackgroundColor3 = menu.BackgroundColor3
 					optBtn.BorderSizePixel = 0
 					optBtn.Text = "  " .. opt
 					optBtn.TextColor3 = Themes[Config.Theme].text
-					optBtn.TextSize = isMobile and 12 or 13
+					optBtn.TextSize = isMobile and 14 or 13
 					optBtn.Font = Enum.Font.Gotham
 					optBtn.TextXAlignment = Enum.TextXAlignment.Left
-					optBtn.Position = UDim2.new(0, 0, 0, (i-1)*32)
+					optBtn.Position = UDim2.new(0, 0, 0, (i-1)*(isMobile and 40 or 32))
 					optBtn.Parent = menu
-					optBtn.ZIndex = 11
+					optBtn.ZIndex = 31
 					optBtn.MouseButton1Click:Connect(function()
 						selector.Text = "  " .. opt
 						menu.Visible = false
-						if data.Callback then data.Callback(opt) end
+						if data.Callback then pcall(function() data.Callback(opt) end) end
 					end)
 				end
+
 				selector.MouseButton1Click:Connect(function()
 					menu.Visible = not menu.Visible
+					-- update menu width & position dynamically
+					menu.Size = UDim2.new(0, selector.AbsoluteSize.X, 0, math.clamp(#data.Options * (isMobile and 40 or 32), 0, (isMobile and 200 or 160)))
+					menu.Position = UDim2.new(0, selector.AbsolutePosition.X - drop.AbsolutePosition.X, 0, selector.AbsolutePosition.Y - drop.AbsolutePosition.Y + selector.AbsoluteSize.Y + 6)
 				end)
+
 				table.insert(tab.Elements, drop)
 				return drop
 			end
+
+			-- CreateSlider
 			function tab:CreateSlider(data)
 				local slider = Instance.new("Frame")
-				slider.Size = UDim2.new(1, 0, 0, 56)
+				slider.Size = UDim2.new(1, 0, 0, isMobile and 76 or 56)
 				slider.BackgroundColor3 = Themes[Config.Theme].elem
 				slider.BorderSizePixel = 0
 				slider.Parent = frame
@@ -653,54 +789,78 @@ function Obsidian:CreateWindow(title)
 				local label = Instance.new("TextLabel")
 				label.Size = UDim2.new(1, 0, 0, 20)
 				label.BackgroundTransparency = 1
-				label.Text = data.Name .. ": " .. data.Value
+				label.Text = data.Name .. ": " .. tostring(data.Value)
 				label.TextColor3 = Themes[Config.Theme].text
-				label.TextSize = isMobile and 12 or 13
+				label.TextSize = isMobile and 14 or 13
 				label.Font = Enum.Font.Gotham
 				label.TextXAlignment = Enum.TextXAlignment.Left
-				label.Position = UDim2.new(0, 12, 0, 4)
+				label.Position = UDim2.new(0, 12, 0, 6)
 				label.Parent = slider
+
 				local track = Instance.new("Frame")
-				track.Size = UDim2.new(1, -24, 0, 8)
-				track.Position = UDim2.new(0, 12, 1, -18)
+				track.Size = UDim2.new(1, -48, 0, isMobile and 12 or 8)
+				track.Position = UDim2.new(0, 24, 0, isMobile and 44 or 36)
 				track.BackgroundColor3 = Themes[Config.Theme].elem:Lerp(Color3.new(0,0,0), 0.3)
 				track.BorderSizePixel = 0
 				track.Parent = slider
 				local tc = Instance.new("UICorner")
-				tc.CornerRadius = UDim.new(0, 4)
+				tc.CornerRadius = UDim.new(0, 6)
 				tc.Parent = track
+
 				local fill = Instance.new("Frame")
-				fill.Size = UDim2.new((data.Value - data.Min) / (data.Max - data.Min), 0, 1, 0)
+				local percent = 0
+				if data.Max and data.Min then
+					percent = (data.Value - data.Min) / math.max(1, (data.Max - data.Min))
+				end
+				fill.Size = UDim2.new(percent, 0, 1, 0)
 				fill.BackgroundColor3 = Themes[Config.Theme].accent
 				fill.BorderSizePixel = 0
 				fill.Parent = track
 				local fc = Instance.new("UICorner")
-				fc.CornerRadius = UDim.new(0, 4)
+				fc.CornerRadius = UDim.new(0, 6)
 				fc.Parent = fill
+
 				local knob = Instance.new("Frame")
-				knob.Size = UDim2.new(0, 18, 0, 18)
-				knob.Position = UDim2.new((data.Value - data.Min) / (data.Max - data.Min), -9, 0.5, -9)
+				local knobSize = isMobile and 28 or 18
+				knob.Size = UDim2.new(0, knobSize, 0, knobSize)
+				knob.Position = UDim2.new(percent, -knobSize/2, 0.5, -knobSize/2)
 				knob.BackgroundColor3 = Color3.new(1,1,1)
 				knob.BorderSizePixel = 0
 				knob.Parent = track
 				local kc = Instance.new("UICorner")
-				kc.CornerRadius = UDim.new(0, 9)
+				kc.CornerRadius = UDim.new(1, 0)
 				kc.Parent = knob
+
 				local dragging = false
-				track.InputBegan:Connect(function(input)
+				local function updateFromInput(input)
+					local pos = input.Position.X - track.AbsolutePosition.X
+					local pct = math.clamp(pos / track.AbsoluteSize.X, 0, 1)
+					if data.Min and data.Max then
+						local val = math.floor(data.Min + (data.Max - data.Min) * pct + 0.5)
+						data.Value = val
+						label.Text = data.Name .. ": " .. tostring(data.Value)
+						fill.Size = UDim2.new(pct, 0, 1, 0)
+						knob.Position = UDim2.new(pct, -knobSize/2, 0.5, -knobSize/2)
+						if data.Callback then pcall(function() data.Callback(data.Value) end) end
+					end
+				end
+
+				-- begin drag on knob or track tap
+				knob.InputBegan:Connect(function(input)
 					if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 						dragging = true
 					end
 				end)
+				track.InputBegan:Connect(function(input)
+					if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+						updateFromInput(input)
+						dragging = true
+					end
+				end)
+
 				UserInputService.InputChanged:Connect(function(input)
-					if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-						local pos = input.Position.X - track.AbsolutePosition.X
-						local percent = math.clamp(pos / track.AbsoluteSize.X, 0, 1)
-						data.Value = math.floor(data.Min + (data.Max - data.Min) * percent + 0.5)
-						label.Text = data.Name .. ": " .. data.Value
-						fill.Size = UDim2.new(percent, 0, 1, 0)
-						knob.Position = UDim2.new(percent, -9, 0.5, -9)
-						if data.Callback then data.Callback(data.Value) end
+					if dragging and (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement) then
+						updateFromInput(input)
 					end
 				end)
 				UserInputService.InputEnded:Connect(function(input)
@@ -708,36 +868,50 @@ function Obsidian:CreateWindow(title)
 						dragging = false
 					end
 				end)
+
 				table.insert(tab.Elements, slider)
 				return slider
 			end
+
 			tabs[#tabs+1] = tab
 			if #tabs == 1 then selectTab(tab) end
 			return tab
 		end
-		local dragging, dragStart, startPos
+
+		-- Dragging logic for the window (touch-friendly)
+		local draggingWindow = false
+		local dragInput, dragStart, startPos
+		local function update(input)
+			local delta = input.Position - dragStart
+			main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+		end
 		titleBar.InputBegan:Connect(function(input)
 			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-				dragging = main
+				draggingWindow = true
 				dragStart = input.Position
 				startPos = main.Position
+				input.Changed:Connect(function()
+					if input.UserInputState == Enum.UserInputState.End then draggingWindow = false end
+				end)
+			end
+		end)
+		titleBar.InputChanged:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+				dragInput = input
 			end
 		end)
 		UserInputService.InputChanged:Connect(function(input)
-			if (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) and dragging then
-				local delta = input.Position - dragStart
-				main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-			end
+			if input == dragInput and draggingWindow then update(input) end
 		end)
-		UserInputService.InputEnded:Connect(function(input)
-			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-				dragging = nil
-			end
-		end)
+
 		closeBtn.MouseButton1Click:Connect(function()
-			screen:Destroy()
+			pcall(function() screen:Destroy() end)
 		end)
+
+		-- Add discord button (if enabled)
 		AddDiscordButton(titleBar)
+
+		-- Apply theme and show loaded notif
 		ApplyTheme(window)
 		Notify("UI Loaded!", 2)
 		return window
